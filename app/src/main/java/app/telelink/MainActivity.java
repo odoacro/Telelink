@@ -97,6 +97,7 @@ public class MainActivity extends Activity {
         Map<String, String> headers;
         volatile boolean framing;
         volatile int offset; // segundo en el que empieza el flujo actual (solo modo compatible)
+        boolean hls; // vídeo por trozos: se puede reenviar en modo compatible desde cualquier punto
     }
 
     private volatile Session session; // cada envío nuevo (o un "Parar") cancela la vigilancia del anterior
@@ -1377,7 +1378,7 @@ public class MainActivity extends Activity {
                 ses.src = url;
                 ses.headers = headers;
                 if (mode == DIRECT) {
-                    Dlna.play(MainActivity.this, target, url, title, null);
+                    Dlna.play(MainActivity.this, target, url, title, null, false);
                     ses.how = "directo";
                 } else {
                     String ip = Dlna.wifiIp(MainActivity.this);
@@ -1418,7 +1419,8 @@ public class MainActivity extends Activity {
                             Thread.sleep(700);
                         }
                         status("Enviando a " + target.name + "…");
-                        Dlna.play(MainActivity.this, target, base + "/c/" + id + "/video.mp4", title, cache.type);
+                        Dlna.play(MainActivity.this, target, base + "/c/" + id + "/video.mp4", title, cache.type,
+                                true);
                         ses.how = "precarga";
                     } else if (!p.hls) {
                         if (mode == LOW) {
@@ -1426,7 +1428,8 @@ public class MainActivity extends Activity {
                                     + "bajar. Prueba «Precargar en el móvil».");
                         }
                         String mime = p.type != null && p.type.startsWith("video/") ? p.type : "video/mp4";
-                        Dlna.play(MainActivity.this, target, base + "/p/" + id + "/video.mp4", title, mime);
+                        Dlna.play(MainActivity.this, target, base + "/p/" + id + "/video.mp4", title, mime,
+                                p.code == 206);
                         ses.how = "puente";
                     } else {
                         // Si con esta web ya hizo falta el modo compatible, se va directo a él.
@@ -1439,7 +1442,7 @@ public class MainActivity extends Activity {
                         if (!compatFirst) {
                             try {
                                 Dlna.play(MainActivity.this, target, base + "/p/" + id + "/index.m3u8", title,
-                                        "application/vnd.apple.mpegurl");
+                                        "application/vnd.apple.mpegurl", false);
                                 status("Comprobando que la tele reproduce…");
                                 ok = watch(target, my);
                             } catch (IOException rejected) {
@@ -1447,13 +1450,14 @@ public class MainActivity extends Activity {
                             }
                             if (my != sendSeq) return;
                         }
+                        ses.hls = true;
                         if (ok) {
                             ses.how = "puente";
                             if (!site.isEmpty()) modes.edit().putInt(site, AUTO).apply();
                         } else {
                             if (!compatFirst) status("No arranca. Probando modo compatible…");
                             Dlna.play(MainActivity.this, target,
-                                    base + "/ts/" + id + "/" + startAt + "/stream.ts", title, "video/mpeg");
+                                    base + "/ts/" + id + "/" + startAt + "/stream.ts", title, "video/mpeg", false);
                             if (compatFirst) status("Comprobando que la tele reproduce…");
                             ok = watch(target, my);
                             if (my != sendSeq) return;
@@ -1532,18 +1536,30 @@ public class MainActivity extends Activity {
         }, "telelink-track").start();
     }
 
-    /** Salto relativo. En modo compatible la tele no sabe saltar: se reinicia el flujo en el punto nuevo. */
+    /**
+     * Salto relativo. En modo compatible la tele no sabe saltar: se reinicia el flujo en el punto nuevo.
+     * Si la tele rechaza el salto en un vídeo por trozos, se pasa a modo compatible en ese punto.
+     */
     private String jump(Dlna.Device d, int delta) throws Exception {
         Session ses = session;
-        if (ses != null && "compatible".equals(ses.how) && ses.target == d) {
-            int now = ses.offset + Dlna.position(this, d);
-            int to = Math.max(0, now + delta);
-            Dlna.play(this, d, ses.base + "/ts/" + ses.id + "/" + to + "/stream.ts", ses.title, "video/mpeg");
-            ses.offset = to;
-            return "Saltando a " + clock(to);
+        boolean mine = ses != null && ses.target == d;
+        if (mine && "compatible".equals(ses.how)) return restartAt(ses, d, ses.offset + Dlna.position(this, d) + delta);
+        try {
+            Dlna.seekBy(this, d, delta);
+            return null;
+        } catch (IOException e) {
+            if (!mine || !ses.hls || !String.valueOf(e.getMessage()).contains("UPnP 701")) throw e;
+            String to = restartAt(ses, d, Dlna.position(this, d) + delta);
+            ses.how = "compatible";
+            return to;
         }
-        Dlna.seekBy(this, d, delta);
-        return null;
+    }
+
+    private String restartAt(Session ses, Dlna.Device d, int second) throws IOException {
+        int to = Math.max(0, second);
+        Dlna.play(this, d, ses.base + "/ts/" + ses.id + "/" + to + "/stream.ts", ses.title, "video/mpeg", false);
+        ses.offset = to;
+        return "Saltando a " + clock(to);
     }
 
     // ---------- Guardar clips cortos ----------

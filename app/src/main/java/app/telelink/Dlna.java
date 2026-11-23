@@ -357,7 +357,15 @@ final class Dlna {
 
     // ---------- Acciones ----------
 
-    static void play(Context ctx, Device d, String url, String title, String mime) throws IOException {
+    /**
+     * Indica a la tele que el servidor acepta peticiones por bytes (Range), así que se puede saltar.
+     * Sin DLNA.ORG_OP la tele puede dar el vídeo por no saltable y rechazar el Seek con "701".
+     */
+    static final String SEEKABLE = "DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000";
+
+    /** seekable: quien sirve el vídeo atiende Range, así que se anuncia SEEKABLE a la tele. */
+    static void play(Context ctx, Device d, String url, String title, String mime, boolean seekable)
+            throws IOException {
         try {
             soap(ctx, d.avControl, AVT, "Stop", "<InstanceID>0</InstanceID>");
         } catch (IOException ignored) {
@@ -370,7 +378,7 @@ final class Dlna {
                 + "<item id=\"0\" parentID=\"-1\" restricted=\"1\">"
                 + "<dc:title>" + escape(title) + "</dc:title>"
                 + "<upnp:class>object.item.videoItem</upnp:class>"
-                + "<res protocolInfo=\"http-get:*:" + mime + ":*\">" + escape(url) + "</res>"
+                + "<res protocolInfo=\"http-get:*:" + mime + ":" + (seekable ? SEEKABLE : "*") + "\">" + escape(url) + "</res>"
                 + "</item></DIDL-Lite>";
 
         String head = "<InstanceID>0</InstanceID><CurrentURI>" + escape(url) + "</CurrentURI>";

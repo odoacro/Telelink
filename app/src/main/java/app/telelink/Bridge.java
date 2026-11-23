@@ -412,8 +412,13 @@ final class Bridge {
             String cr = up.getHeaderField("Content-Range");
             if (cr != null) h.append("Content-Range: ").append(cr).append("\r\n");
             h.append("Accept-Ranges: bytes\r\n")
-                    .append("transferMode.dlna.org: Streaming\r\n")
-                    .append("Connection: close\r\n\r\n");
+                    .append("transferMode.dlna.org: Streaming\r\n");
+
+            // Solo se anuncia el salto si la web atiende Range de verdad.
+            if (code == 206 || "bytes".equalsIgnoreCase(up.getHeaderField("Accept-Ranges"))) {
+                h.append("contentFeatures.dlna.org: ").append(Dlna.SEEKABLE).append("\r\n");
+            }
+            h.append("Connection: close\r\n\r\n");
             out.write(h.toString().getBytes(StandardCharsets.US_ASCII));
             if (!headOnly) copy(body, out);
         } finally {
@@ -627,6 +632,7 @@ final class Bridge {
                 + (partial ? "Content-Range: bytes " + a + "-" + b + "/" + c.total + "\r\n" : "")
                 + "Accept-Ranges: bytes\r\n"
                 + "transferMode.dlna.org: Streaming\r\n"
+                + "contentFeatures.dlna.org: " + Dlna.SEEKABLE + "\r\n"
                 + "Connection: close\r\n\r\n";
         out.write(h.getBytes(StandardCharsets.US_ASCII));
         if (headOnly) return;
