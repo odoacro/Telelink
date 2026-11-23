@@ -115,7 +115,7 @@ public class MainActivity extends Activity {
     private volatile String currentPage = "";
     private String userAgent = "";
     private static final int AUTO = 0, COMPAT = 1, DIRECT = 2, PRELOAD = 3, LOW = 4;
-    private static final String RELEASE = "https://github.com/Cimentacion/Telelink/releases/download/latest/";
+    private static final String RELEASE = "https://github.com/odoacro/Telelink/releases/download/latest/";
     private static final String INSTALL = "app.telelink.INSTALL";
     /** Tamaño máximo de un archivo directo que se puede guardar en el móvil (5000 MB). */
     private static final long MAX_SAVE = 5000L * 1024 * 1024;
@@ -1158,6 +1158,7 @@ public class MainActivity extends Activity {
         io.execute(() -> {
             final List<Dlna.Device> found = Dlna.discover(MainActivity.this, 4000);
             ui.post(() -> {
+                if (isFinishing()) return;
                 wait.dismiss();
                 if (found.isEmpty()) {
                     new AlertDialog.Builder(MainActivity.this)
@@ -1193,6 +1194,7 @@ public class MainActivity extends Activity {
                     io.execute(() -> {
                         final List<Dlna.Device> found = Dlna.atIp(MainActivity.this, ip);
                         ui.post(() -> {
+                            if (isFinishing()) return;
                             wait.dismiss();
                             if (found.isEmpty()) {
                                 new AlertDialog.Builder(MainActivity.this)
@@ -1222,6 +1224,7 @@ public class MainActivity extends Activity {
                     if (!sending) sendLabel();
                     if (then != null) then.run();
                 })
+                .setNeutralButton("Escribir la IP", (d, w) -> askTvIp(then))
                 .setNegativeButton("Cancelar", null)
                 .show();
     }

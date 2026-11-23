@@ -8,8 +8,8 @@ android {
         applicationId 'app.telelink'
         minSdk 24
         targetSdk 34
-        versionCode((System.getenv('GITHUB_RUN_NUMBER') ?: '1').toInteger())
-        versionName '1.0.' + (System.getenv('GITHUB_RUN_NUMBER') ?: '0')
+        versionCode((System.getenv('BUILD_NUMBER') ?: '1').toInteger())
+        versionName '1.0.' + (System.getenv('BUILD_NUMBER') ?: '0')
     }
 
     // Clave fija en el repo para que cada APK nuevo se instale encima del anterior.
