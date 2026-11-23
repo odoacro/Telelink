@@ -17,14 +17,20 @@ import java.net.DatagramSocket;
 import java.net.HttpURLConnection;
 import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -100,9 +106,64 @@ final class Dlna {
 
     // ---------- Descubrimiento (SSDP) ----------
 
+    private static final String SSDP_GROUP = "239.255.255.250";
+
+    /** Puerto fijo donde las teles Samsung con Tizen publican su receptor DLNA. */
+    private static final int SAMSUNG_DMR_PORT = 9197;
+
+    /**
+     * Busca teles en la wifi. Primero con el aviso general (multicast); si el router no lo
+     * deja pasar, pregunta directamente a cada dirección de la red.
+     */
     static List<Device> discover(Context ctx, int timeoutMs) {
-        List<Device> found = new ArrayList<>();
+        List<InetAddress> group = new ArrayList<>();
+        try {
+            group.add(InetAddress.getByName(SSDP_GROUP));
+        } catch (IOException ignored) {
+        }
+        List<Device> found = describeAll(ctx, search(ctx, group, timeoutMs));
+        if (!found.isEmpty()) return found;
+
+        List<InetAddress> hosts = neighbours(ctx);
+        if (hosts.isEmpty()) return found;
+
+        // Las dos búsquedas directas van a la vez para acortar la espera.
+        final Set<String> unicast = Collections.synchronizedSet(new LinkedHashSet<>());
+        Thread t = new Thread(() -> unicast.addAll(search(ctx, hosts, 2500)), "telelink-ssdp");
+        t.start();
+        Set<String> locations = probeSamsung(ctx, hosts);
+        try {
+            t.join(5000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        synchronized (unicast) {
+            locations.addAll(unicast);
+        }
+        return describeAll(ctx, locations);
+    }
+
+    /** Busca una tele en una IP concreta que escribe el usuario. */
+    static List<Device> atIp(Context ctx, String ip) {
+        List<Device> none = new ArrayList<>();
+        if (ip == null || !ip.trim().matches("\\d{1,3}(\\.\\d{1,3}){3}")) return none;
+        InetAddress host;
+        try {
+            host = InetAddress.getByName(ip.trim());
+        } catch (IOException e) {
+            return none;
+        }
+        List<InetAddress> one = new ArrayList<>();
+        one.add(host);
+        Set<String> locations = search(ctx, one, 2500);
+        locations.add("http://" + host.getHostAddress() + ":" + SAMSUNG_DMR_PORT + "/dmr");
+        return describeAll(ctx, locations);
+    }
+
+    /** Envía M-SEARCH (SSDP) a cada destino y devuelve las direcciones de descripción recibidas. */
+    private static Set<String> search(Context ctx, List<InetAddress> targets, int timeoutMs) {
         Set<String> locations = new LinkedHashSet<>();
+        if (targets.isEmpty()) return locations;
 
         WifiManager wm = (WifiManager) ctx.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         WifiManager.MulticastLock lock = null;
@@ -122,17 +183,22 @@ final class Dlna {
             }
             sock.setSoTimeout(600);
 
-            InetAddress group = InetAddress.getByName("239.255.255.250");
-            String[] targets = {"urn:schemas-upnp-org:device:MediaRenderer:1", AVT};
+            String[] types = {"urn:schemas-upnp-org:device:MediaRenderer:1", AVT};
             for (int round = 0; round < 2; round++) {
-                for (String st : targets) {
-                    String msg = "M-SEARCH * HTTP/1.1\r\n"
-                            + "HOST: 239.255.255.250:1900\r\n"
-                            + "MAN: \"ssdp:discover\"\r\n"
-                            + "MX: 2\r\n"
-                            + "ST: " + st + "\r\n\r\n";
-                    byte[] data = msg.getBytes(StandardCharsets.US_ASCII);
-                    sock.send(new DatagramPacket(data, data.length, group, 1900));
+                for (InetAddress to : targets) {
+                    for (String st : types) {
+                        String msg = "M-SEARCH * HTTP/1.1\r\n"
+                                + "HOST: " + to.getHostAddress() + ":1900\r\n"
+                                + "MAN: \"ssdp:discover\"\r\n"
+                                + "MX: 2\r\n"
+                                + "ST: " + st + "\r\n\r\n";
+                        byte[] data = msg.getBytes(StandardCharsets.US_ASCII);
+                        try {
+                            sock.send(new DatagramPacket(data, data.length, to, 1900));
+                        } catch (IOException ignored) {
+                            // Una dirección inalcanzable no debe cortar el envío a las demás.
+                        }
+                    }
                 }
             }
 
@@ -154,7 +220,63 @@ final class Dlna {
             if (sock != null) sock.close();
             if (lock != null && lock.isHeld()) lock.release();
         }
+        return locations;
+    }
 
+    /** Las demás direcciones del mismo bloque /24 que el móvil en la wifi. */
+    private static List<InetAddress> neighbours(Context ctx) {
+        List<InetAddress> hosts = new ArrayList<>();
+        String ip = wifiIp(ctx);
+        if (ip == null) return hosts;
+        String[] parts = ip.split("\\.");
+        if (parts.length != 4) return hosts;
+        String prefix = parts[0] + "." + parts[1] + "." + parts[2] + ".";
+        for (int i = 1; i <= 254; i++) {
+            String h = prefix + i;
+            if (h.equals(ip)) continue;
+            try {
+                hosts.add(InetAddress.getByName(h));
+            } catch (IOException ignored) {
+            }
+        }
+        return hosts;
+    }
+
+    /** Prueba en paralelo el puerto DLNA de las Samsung en cada dirección. */
+    private static Set<String> probeSamsung(Context ctx, List<InetAddress> hosts) {
+        final Set<String> locations = Collections.synchronizedSet(new LinkedHashSet<>());
+        final Network n = wifi(ctx);
+        ExecutorService pool = Executors.newFixedThreadPool(32);
+        for (final InetAddress h : hosts) {
+            pool.execute(() -> {
+                Socket s = null;
+                try {
+                    s = n != null ? n.getSocketFactory().createSocket() : new Socket();
+                    s.connect(new InetSocketAddress(h, SAMSUNG_DMR_PORT), 500);
+                    locations.add("http://" + h.getHostAddress() + ":" + SAMSUNG_DMR_PORT + "/dmr");
+                } catch (IOException ignored) {
+                } finally {
+                    if (s != null) {
+                        try {
+                            s.close();
+                        } catch (IOException ignored) {
+                        }
+                    }
+                }
+            });
+        }
+        pool.shutdown();
+        try {
+            if (!pool.awaitTermination(15, TimeUnit.SECONDS)) pool.shutdownNow();
+        } catch (InterruptedException e) {
+            pool.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+        return new LinkedHashSet<>(locations);
+    }
+
+    private static List<Device> describeAll(Context ctx, Set<String> locations) {
+        List<Device> found = new ArrayList<>();
         for (String location : locations) {
             try {
                 Device d = describe(ctx, location);

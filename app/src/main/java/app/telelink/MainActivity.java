@@ -1162,26 +1162,68 @@ public class MainActivity extends Activity {
                 if (found.isEmpty()) {
                     new AlertDialog.Builder(MainActivity.this)
                             .setTitle("No encuentro ninguna tele")
-                            .setMessage("Comprueba que la tele está encendida y en la misma wifi que el móvil.")
+                            .setMessage("Comprueba que la tele está encendida y en la misma wifi que el móvil. "
+                                    + "Si lo está, escribe su IP (en la tele, Ajustes > General > Red > "
+                                    + "Estado de red).")
                             .setPositiveButton("Reintentar", (d, w) -> pickTv(then))
+                            .setNeutralButton("Escribir la IP", (d, w) -> askTvIp(then))
                             .setNegativeButton("Cancelar", null)
                             .show();
                     return;
                 }
-                String[] names = new String[found.size()];
-                for (int i = 0; i < names.length; i++) names[i] = found.get(i).name;
-                new AlertDialog.Builder(MainActivity.this)
-                        .setTitle("Elige la tele")
-                        .setItems(names, (d, which) -> {
-                            tv = found.get(which);
-                            saveTv();
-                            if (!sending) sendLabel();
-                            if (then != null) then.run();
-                        })
-                        .setNegativeButton("Cancelar", null)
-                        .show();
+                chooseTv(found, then);
             });
         });
+    }
+
+    private void askTvIp(final Runnable then) {
+        final EditText field = new EditText(this);
+        field.setInputType(InputType.TYPE_CLASS_PHONE);
+        field.setHint("192.168.1.40");
+        field.setSingleLine(true);
+        new AlertDialog.Builder(this)
+                .setTitle("IP de la tele")
+                .setView(field)
+                .setPositiveButton("Buscar", (d, w) -> {
+                    final String ip = field.getText().toString().trim();
+                    final AlertDialog wait = new AlertDialog.Builder(MainActivity.this)
+                            .setMessage("Buscando la tele en " + ip + "…")
+                            .setCancelable(false)
+                            .show();
+                    io.execute(() -> {
+                        final List<Dlna.Device> found = Dlna.atIp(MainActivity.this, ip);
+                        ui.post(() -> {
+                            wait.dismiss();
+                            if (found.isEmpty()) {
+                                new AlertDialog.Builder(MainActivity.this)
+                                        .setTitle("No hay ninguna tele en " + ip)
+                                        .setMessage("Revisa la IP y que la tele esté encendida.")
+                                        .setPositiveButton("Otra IP", (d2, w2) -> askTvIp(then))
+                                        .setNegativeButton("Cancelar", null)
+                                        .show();
+                                return;
+                            }
+                            chooseTv(found, then);
+                        });
+                    });
+                })
+                .setNegativeButton("Cancelar", null)
+                .show();
+    }
+
+    private void chooseTv(final List<Dlna.Device> found, final Runnable then) {
+        String[] names = new String[found.size()];
+        for (int i = 0; i < names.length; i++) names[i] = found.get(i).name;
+        new AlertDialog.Builder(this)
+                .setTitle("Elige la tele")
+                .setItems(names, (d, which) -> {
+                    tv = found.get(which);
+                    saveTv();
+                    if (!sending) sendLabel();
+                    if (then != null) then.run();
+                })
+                .setNegativeButton("Cancelar", null)
+                .show();
     }
 
     private void chooseMode(final String url) {
